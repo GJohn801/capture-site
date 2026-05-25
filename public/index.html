@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Capture Website Front End</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 720px; }
+    label, button, input, textarea { display: block; width: 100%; }
+    input, textarea { padding: 0.75rem; margin: 0.5rem 0 1rem; font-size: 1rem; }
+    textarea { min-height: 150px; resize: vertical; }
+    button { padding: 0.85rem; font-size: 1rem; cursor: pointer; }
+    fieldset.capture-mode { border: none; margin: 0 0 1rem; padding: 0; }
+    fieldset.capture-mode legend { font-weight: 600; margin-bottom: 0.5rem; }
+    fieldset.capture-mode label { display: inline-flex; align-items: center; width: auto; margin-right: 1.5rem; }
+    fieldset.capture-mode input[type="radio"] { width: auto; margin-right: 0.5rem; }
+    pre { background: #f6f8fa; padding: 1rem; white-space: pre-wrap; word-break: break-word; }
+    .status { margin-top: 1rem; }
+    .field-note { margin-top: -0.75rem; margin-bottom: 0.75rem; color: #555; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <h1>Capture Website</h1>
+  <p>Enter a single URL or paste one URL per line in the list. Choose the output directory name and click the button.</p>
+
+  <label for="url">Single URL</label>
+  <input id="url" type="url" placeholder="https://example.com" value="https://example.com" />
+
+  <label for="urls">URL list</label>
+  <textarea id="urls" placeholder="https://example.com\nhttps://example.org"></textarea>
+  <div class="field-note">If both fields are filled, the list will be used.</div>
+
+  <label for="outputDir">Output directory</label>
+  <input id="outputDir" type="text" placeholder="screenshots" value="" />
+  <div class="field-note">Enter a relative folder name inside the project directory.</div>
+
+  <fieldset class="capture-mode">
+    <legend>Capture mode</legend>
+    <label><input type="radio" name="captureMode" value="desktop" checked /> Desktop</label>
+    <label><input type="radio" name="captureMode" value="mobile" /> Mobile (375px width, full height)</label>
+    <div class="field-note">Mobile mode renders at 375px width and captures the full page height.</div>
+  </fieldset>
+
+  <button id="captureButton">Capture Screenshot(s)</button>
+
+  <div class="status" id="status"></div>
+
+  <script>
+    // References to the DOM form fields and status panel.
+    const button = document.getElementById('captureButton');
+    const input = document.getElementById('url');
+    const urlsTextarea = document.getElementById('urls');
+    const outputDirInput = document.getElementById('outputDir');
+    const status = document.getElementById('status');
+
+    // Build a readable result block after the capture request finishes.
+    const renderResult = (result) => {
+      const lines = result.results.map((item) => {
+        const statusText = item.success ? '✅ Success' : '❌ Failed';
+        return `Mode: ${item.captureMode}\nURL: ${item.url}\nStatus: ${statusText}\nOutput: ${item.output}\n${item.error ? `Error: ${item.error}\n` : ''}${item.stderr ? `Stderr: ${item.stderr}\n` : ''}`;
+      });
+
+      status.innerHTML = `
+        <p style="color:green">${result.message}</p>
+        <p><strong>Capture mode:</strong> ${result.captureMode}</p>
+        <p><strong>Output directory:</strong> ${result.outputDir}</p>
+        <pre>${lines.join('\n---\n')}</pre>
+      `;
+    };
+
+    button.addEventListener('click', async () => {
+      const url = input.value.trim();
+      const urls = urlsTextarea.value.trim();
+      const outputDir = outputDirInput.value.trim();
+
+      if (!url && !urls) {
+        status.innerHTML = '<p style="color:red">Please enter a URL or a list of URLs.</p>';
+        return;
+      }
+
+      status.innerHTML = '<p>Capturing…</p>';
+      button.disabled = true;
+      const captureMode = document.querySelector('input[name="captureMode"]:checked')?.value || 'desktop';
+
+      try {
+        const body = { outputDir, captureMode };
+
+        // If the URL list is populated, send that first. Otherwise use the single URL.
+        if (urls) {
+          body.urls = urls;
+        } else {
+          body.url = url;
+        }
+
+        const response = await fetch('/capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || 'Capture failed');
+        }
+
+        renderResult(result);
+      } catch (error) {
+        status.innerHTML = `<p style="color:red">${error.message}</p>`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

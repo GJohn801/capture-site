@@ -1,0 +1,13 @@
+{
+  "name": "capture-site-frontend",
+  "version": "1.0.0",
+  "description": "Simple front end for capture-website-cli",
+  "main": "server.js",
+  "scripts": {
+    "prestart": "sh ./scripts/kill-port.sh 3000",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.4"
+  }
+}
