@@ -21,24 +21,22 @@
 </head>
 <body>
   <h1>Capture Website</h1>
-  <p>Enter a single URL or paste one URL per line in the list. Choose the output directory name and click the button.</p>
-
-  <label for="url">Single URL</label>
-  <input id="url" type="url" placeholder="https://example.com" value="https://example.com" />
+  <p>Paste one URL per line in the list. Choose the output directory name and click the button.</p>
 
   <label for="urls">URL list</label>
   <textarea id="urls" placeholder="https://example.com\nhttps://example.org"></textarea>
-  <div class="field-note">If both fields are filled, the list will be used.</div>
+  <div class="field-note">One URL per line. The UI only supports batch capture.</div>
 
   <label for="outputDir">Output directory</label>
   <input id="outputDir" type="text" placeholder="screenshots" value="" />
-  <div class="field-note">Enter a relative folder name inside the project directory.</div>
+  <div class="field-note">Enter a folder name. Captures are saved to your Desktop by default.</div>
 
   <fieldset class="capture-mode">
-    <legend>Capture mode</legend>
-    <label><input type="radio" name="captureMode" value="desktop" checked /> Desktop</label>
-    <label><input type="radio" name="captureMode" value="mobile" /> Mobile (375px width, full height)</label>
-    <div class="field-note">Mobile mode renders at 375px width and captures the full page height.</div>
+    <legend>Capture option</legend>
+    <label><input type="radio" name="captureMode" value="both" checked /> Both (desktop + mobile)</label>
+    <label><input type="radio" name="captureMode" value="desktop" /> Desktop only</label>
+    <label><input type="radio" name="captureMode" value="mobile" /> Mobile only (375px width, full height)</label>
+    <div class="field-note">Default saves both desktop and mobile captures. Choose one to export only that view.</div>
   </fieldset>
 
   <button id="captureButton">Capture Screenshot(s)</button>
@@ -48,7 +46,6 @@
   <script>
     // References to the DOM form fields and status panel.
     const button = document.getElementById('captureButton');
-    const input = document.getElementById('url');
     const urlsTextarea = document.getElementById('urls');
     const outputDirInput = document.getElementById('outputDir');
     const status = document.getElementById('status');
@@ -69,28 +66,20 @@
     };
 
     button.addEventListener('click', async () => {
-      const url = input.value.trim();
       const urls = urlsTextarea.value.trim();
       const outputDir = outputDirInput.value.trim();
 
-      if (!url && !urls) {
-        status.innerHTML = '<p style="color:red">Please enter a URL or a list of URLs.</p>';
+      if (!urls) {
+        status.innerHTML = '<p style="color:red">Please enter a list of URLs.</p>';
         return;
       }
 
       status.innerHTML = '<p>Capturing…</p>';
       button.disabled = true;
-      const captureMode = document.querySelector('input[name="captureMode"]:checked')?.value || 'desktop';
+      const captureMode = document.querySelector('input[name="captureMode"]:checked')?.value || 'both';
 
       try {
-        const body = { outputDir, captureMode };
-
-        // If the URL list is populated, send that first. Otherwise use the single URL.
-        if (urls) {
-          body.urls = urls;
-        } else {
-          body.url = url;
-        }
+        const body = { outputDir, captureMode, urls };
 
         const response = await fetch('/capture', {
           method: 'POST',

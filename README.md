@@ -38,13 +38,12 @@ PORT=3001 npm start
 
 ## How to use the front end
 
-- Enter a single URL in the "Single URL" field.
-- Or paste one URL per line into the "URL list" field.
-- Choose the capture mode: `Desktop` or `Mobile (375px width, full height, using mobile device emulation)`.
-- Enter a relative output directory name inside the project folder (default: `screenshots`).
+- Paste one URL per line into the "URL list" field.
+- Choose the capture option: `Both` (desktop + mobile), `Desktop only`, or `Mobile only`.
+- Enter a folder name for the output directory (default: `screenshots`).
 - Click `Capture Screenshot(s)`.
 
-By default, screenshots are saved inside the project folder in `screenshots`.
+By default, screenshots are saved to `Desktop/screenshots` and include both desktop and mobile captures.
 
 ## API endpoint
 

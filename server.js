@@ -2,10 +2,12 @@ const express = require('express');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const cwd = process.cwd();
+const desktopRoot = path.join(os.homedir(), 'Desktop');
 const serverLogPath = path.join(cwd, 'server.log');
 
 // Keep the server log open to capture requests and unexpected runtime failures.
@@ -60,7 +62,7 @@ const validateUrl = (value) => {
   }
 };
 
-// Resolve the output directory inside the project folder.
+// Resolve the output directory under the user's Desktop.
 const resolveOutputDirectory = (name) => {
   const trimmedName = String(name).trim() || 'screenshots';
 
@@ -68,9 +70,9 @@ const resolveOutputDirectory = (name) => {
     throw new Error('Invalid output directory name. Use a relative folder name only.');
   }
 
-  const outputDirPath = path.resolve(cwd, trimmedName);
-  if (!outputDirPath.startsWith(cwd + path.sep) && outputDirPath !== cwd) {
-    throw new Error('Invalid output directory path. Output must be inside the project folder.');
+  const outputDirPath = path.resolve(desktopRoot, trimmedName);
+  if (!outputDirPath.startsWith(desktopRoot + path.sep) && outputDirPath !== desktopRoot) {
+    throw new Error('Invalid output directory path. Output must be inside your Desktop folder.');
   }
 
   return outputDirPath;
@@ -138,10 +140,9 @@ const captureWebsite = (url, outputPath, options = {}) => {
 
 app.post('/capture', async (req, res) => {
   // Parse the request body.
-  const singleUrl = String(req.body?.url || '').trim();
   const urlListRaw = String(req.body?.urls || '').trim();
   const outputDirName = String(req.body?.outputDir ?? '').trim();
-  const captureMode = String(req.body?.captureMode || 'desktop').trim().toLowerCase();
+  const captureMode = String(req.body?.captureMode || 'both').trim().toLowerCase();
 
   let outputDirPath;
   try {
@@ -150,18 +151,16 @@ app.post('/capture', async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  if (!['desktop', 'mobile'].includes(captureMode)) {
-    return res.status(400).json({ error: 'captureMode must be either "desktop" or "mobile".' });
+  if (!['both', 'desktop', 'mobile'].includes(captureMode)) {
+    return res.status(400).json({ error: 'captureMode must be "both", "desktop", or "mobile".' });
   }
 
   const urls = urlListRaw
     ? urlListRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    : singleUrl
-      ? [singleUrl]
-      : [];
+    : [];
 
   if (urls.length === 0) {
-    return res.status(400).json({ error: 'Enter at least one URL in the single URL field or URL list.' });
+    return res.status(400).json({ error: 'Enter at least one URL in the URL list.' });
   }
 
   const validatedUrls = [];
@@ -179,63 +178,68 @@ app.post('/capture', async (req, res) => {
   await fs.promises.mkdir(logsDir, { recursive: true });
 
   const results = [];
+  const captureModes = captureMode === 'both' ? ['desktop', 'mobile'] : [captureMode];
+
   for (const url of validatedUrls) {
     const safeBase = makeSafeFilename(url);
-    const filenameSuffix = captureMode === 'mobile' ? '-mobile' : '';
-    const outputPath = path.join(outputDirPath, `${safeBase}${filenameSuffix}.jpg`);
-    const outLog = path.join(logsDir, `${safeBase}${filenameSuffix}.out.log`);
-    const errLog = path.join(logsDir, `${safeBase}${filenameSuffix}.err.log`);
 
-    try {
-      const captureOptions = {
-        fullPage: true,
-        type: 'jpeg',
-        delay: 5,
-        preloadLazyContent: true,
-        overwrite: true,
-        timeout: 120,
-        waitForNetworkIdle: true,
-      };
+    for (const mode of captureModes) {
+      const filenameSuffix = mode === 'mobile' ? '-mobile' : '';
+      const outputPath = path.join(outputDirPath, `${safeBase}${filenameSuffix}.jpg`);
+      const outLog = path.join(logsDir, `${safeBase}${filenameSuffix}.out.log`);
+      const errLog = path.join(logsDir, `${safeBase}${filenameSuffix}.err.log`);
 
-      if (captureMode === 'mobile') {
-        captureOptions.width = 375;
-        captureOptions.emulateDevice = 'iPhone X';
+      try {
+        const captureOptions = {
+          fullPage: true,
+          type: 'jpeg',
+          delay: 5,
+          preloadLazyContent: true,
+          overwrite: true,
+          timeout: 120,
+          waitForNetworkIdle: true,
+        };
+
+        if (mode === 'mobile') {
+          captureOptions.width = 375;
+          captureOptions.emulateDevice = 'iPhone X';
+        }
+
+        const result = await captureWebsite(url, outputPath, captureOptions);
+
+        if (result.stdout) {
+          await fs.promises.appendFile(outLog, result.stdout + '\n');
+        }
+        if (result.stderr) {
+          await fs.promises.appendFile(errLog, result.stderr + '\n');
+        }
+
+        results.push({
+          url,
+          output: outputPath,
+          success: true,
+          captureMode: mode,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          outLog,
+          errLog,
+        });
+      } catch ({ error, stdout, stderr }) {
+        const message = error?.message || 'Capture failed';
+        await fs.promises.appendFile(errLog, `${message}\n${stdout || ''}\n${stderr || ''}\n`);
+
+        results.push({
+          url,
+          output: outputPath,
+          success: false,
+          captureMode: mode,
+          error: message,
+          stdout,
+          stderr,
+          outLog,
+          errLog,
+        });
       }
-
-      const result = await captureWebsite(url, outputPath, captureOptions);
-
-      if (result.stdout) {
-        await fs.promises.appendFile(outLog, result.stdout + '\n');
-      }
-      if (result.stderr) {
-        await fs.promises.appendFile(errLog, result.stderr + '\n');
-      }
-
-      results.push({
-        url,
-        output: outputPath,
-        success: true,
-        captureMode,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        outLog,
-        errLog,
-      });
-    } catch ({ error, stdout, stderr }) {
-      const message = error?.message || 'Capture failed';
-      await fs.promises.appendFile(errLog, `${message}\n${stdout || ''}\n${stderr || ''}\n`);
-
-      results.push({
-        url,
-        output: outputPath,
-        success: false,
-        captureMode,
-        error: message,
-        stdout,
-        stderr,
-        outLog,
-        errLog,
-      });
     }
   }
 
