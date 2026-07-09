@@ -62,6 +62,22 @@ const validateUrl = (value) => {
   }
 };
 
+const SCREEN_SIZE_PRESETS = {
+  wordpress: [375, 600, 768, 1025, 1200, 1600],
+  webflow: [1025, 992, 767, 478],
+};
+
+const resolveCapturePreset = (value) => {
+  const presetName = String(value || 'wordpress').trim().toLowerCase();
+  const widths = SCREEN_SIZE_PRESETS[presetName];
+
+  if (!widths) {
+    throw new Error(`Unsupported capture preset: ${value}`);
+  }
+
+  return { name: presetName, widths };
+};
+
 // Resolve the output directory under the user's Desktop.
 const resolveOutputDirectory = (name) => {
   const trimmedName = String(name).trim() || 'screenshots';
@@ -139,10 +155,9 @@ const captureWebsite = (url, outputPath, options = {}) => {
 };
 
 app.post('/capture', async (req, res) => {
-  // Parse the request body.
   const urlListRaw = String(req.body?.urls || '').trim();
   const outputDirName = String(req.body?.outputDir ?? '').trim();
-  const captureMode = String(req.body?.captureMode || 'both').trim().toLowerCase();
+  const capturePresetInput = String(req.body?.capturePreset || 'wordpress').trim();
 
   let outputDirPath;
   try {
@@ -151,8 +166,11 @@ app.post('/capture', async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  if (!['both', 'desktop', 'mobile'].includes(captureMode)) {
-    return res.status(400).json({ error: 'captureMode must be "both", "desktop", or "mobile".' });
+  let presetConfig;
+  try {
+    presetConfig = resolveCapturePreset(capturePresetInput);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 
   const urls = urlListRaw
@@ -172,38 +190,33 @@ app.post('/capture', async (req, res) => {
     }
   }
 
-  // Ensure the output directory exists before running any captures.
-  await fs.promises.mkdir(outputDirPath, { recursive: true });
-  const logsDir = path.join(outputDirPath, 'logs');
+  const presetOutputDir = path.join(outputDirPath, presetConfig.name);
+  await fs.promises.mkdir(presetOutputDir, { recursive: true });
+  const logsDir = path.join(presetOutputDir, 'logs');
   await fs.promises.mkdir(logsDir, { recursive: true });
 
   const results = [];
-  const captureModes = captureMode === 'both' ? ['desktop', 'mobile'] : [captureMode];
 
   for (const url of validatedUrls) {
     const safeBase = makeSafeFilename(url);
 
-    for (const mode of captureModes) {
-      const filenameSuffix = mode === 'mobile' ? '-mobile' : '';
-      const outputPath = path.join(outputDirPath, `${safeBase}${filenameSuffix}.jpg`);
-      const outLog = path.join(logsDir, `${safeBase}${filenameSuffix}.out.log`);
-      const errLog = path.join(logsDir, `${safeBase}${filenameSuffix}.err.log`);
+    for (const width of presetConfig.widths) {
+      const outputFileName = `${safeBase}-${presetConfig.name}-${width}px.jpg`;
+      const outputPath = path.join(presetOutputDir, outputFileName);
+      const outLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.out.log`);
+      const errLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.err.log`);
 
       try {
         const captureOptions = {
           fullPage: true,
           type: 'jpeg',
           delay: 5,
+          width,
           preloadLazyContent: true,
           overwrite: true,
           timeout: 120,
           waitForNetworkIdle: true,
         };
-
-        if (mode === 'mobile') {
-          captureOptions.width = 375;
-          captureOptions.emulateDevice = 'iPhone X';
-        }
 
         const result = await captureWebsite(url, outputPath, captureOptions);
 
@@ -216,9 +229,10 @@ app.post('/capture', async (req, res) => {
 
         results.push({
           url,
+          width,
           output: outputPath,
           success: true,
-          captureMode: mode,
+          capturePreset: presetConfig.name,
           stdout: result.stdout,
           stderr: result.stderr,
           outLog,
@@ -230,9 +244,10 @@ app.post('/capture', async (req, res) => {
 
         results.push({
           url,
+          width,
           output: outputPath,
           success: false,
-          captureMode: mode,
+          capturePreset: presetConfig.name,
           error: message,
           stdout,
           stderr,
@@ -247,9 +262,10 @@ app.post('/capture', async (req, res) => {
   const failureCount = results.length - successCount;
 
   return res.json({
-    message: `${successCount} capture(s) completed, ${failureCount} failed.`,
-    captureMode,
-    outputDir: outputDirPath,
+    message: `${successCount} screenshot(s) completed for ${presetConfig.name} preset, ${failureCount} failed.`,
+    capturePreset: presetConfig.name,
+    widths: presetConfig.widths,
+    outputDir: presetOutputDir,
     results,
   });
 });

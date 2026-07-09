@@ -32,11 +32,10 @@
   <div class="field-note">Enter a folder name. Captures are saved to your Desktop by default.</div>
 
   <fieldset class="capture-mode">
-    <legend>Capture option</legend>
-    <label><input type="radio" name="captureMode" value="both" checked /> Both (desktop + mobile)</label>
-    <label><input type="radio" name="captureMode" value="desktop" /> Desktop only</label>
-    <label><input type="radio" name="captureMode" value="mobile" /> Mobile only (375px width, full height)</label>
-    <div class="field-note">Default saves both desktop and mobile captures. Choose one to export only that view.</div>
+    <legend>Capture options</legend>
+    <label><input type="radio" name="capturePreset" value="wordpress" checked /> WordPress</label>
+    <label><input type="radio" name="capturePreset" value="webflow" /> Webflow</label>
+    <div class="field-note">WordPress uses 375, 600, 768, 1025, 1200 and 1600px widths. Webflow uses 1025, 992, 767 and 478px widths.</div>
   </fieldset>
 
   <button id="captureButton">Capture Screenshot(s)</button>
@@ -54,12 +53,13 @@
     const renderResult = (result) => {
       const lines = result.results.map((item) => {
         const statusText = item.success ? '✅ Success' : '❌ Failed';
-        return `Mode: ${item.captureMode}\nURL: ${item.url}\nStatus: ${statusText}\nOutput: ${item.output}\n${item.error ? `Error: ${item.error}\n` : ''}${item.stderr ? `Stderr: ${item.stderr}\n` : ''}`;
+        return `Preset: ${item.capturePreset}\nWidth: ${item.width}px\nURL: ${item.url}\nStatus: ${statusText}\nOutput: ${item.output}\n${item.error ? `Error: ${item.error}\n` : ''}${item.stderr ? `Stderr: ${item.stderr}\n` : ''}`;
       });
 
       status.innerHTML = `
         <p style="color:green">${result.message}</p>
-        <p><strong>Capture mode:</strong> ${result.captureMode}</p>
+        <p><strong>Preset:</strong> ${result.capturePreset}</p>
+        <p><strong>Widths:</strong> ${result.widths.join(', ')}px</p>
         <p><strong>Output directory:</strong> ${result.outputDir}</p>
         <pre>${lines.join('\n---\n')}</pre>
       `;
@@ -76,10 +76,10 @@
 
       status.innerHTML = '<p>Capturing…</p>';
       button.disabled = true;
-      const captureMode = document.querySelector('input[name="captureMode"]:checked')?.value || 'both';
+      const capturePreset = document.querySelector('input[name="capturePreset"]:checked')?.value || 'wordpress';
 
       try {
-        const body = { outputDir, captureMode, urls };
+        const body = { outputDir, capturePreset, urls };
 
         const response = await fetch('/capture', {
           method: 'POST',
