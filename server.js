@@ -49,6 +49,9 @@ const getCaptureSessionPayload = (session) => ({
   status: session.status,
   totalTasks: session.totalTasks,
   completedTasks: session.completedTasks,
+  totalUrls: session.totalUrls,
+  completedUrls: session.completedUrls,
+  queuedUrls: session.queuedUrls,
   currentTask: session.currentTask,
   message: session.message,
   outputDir: session.outputDir,
@@ -150,6 +153,10 @@ const runCaptureSession = async (captureId, { urls, presetConfig, presetOutputDi
       session.status = session.completedTasks >= session.totalTasks ? 'completed' : 'running';
       captureSessions.set(captureId, session);
     }
+
+    session.completedUrls += 1;
+    session.queuedUrls = Math.max(session.totalUrls - session.completedUrls, 0);
+    captureSessions.set(captureId, session);
   }
 
   const successCount = results.filter((item) => item.success).length;
@@ -326,6 +333,9 @@ app.post('/capture', async (req, res) => {
     status: 'queued',
     totalTasks: validatedUrls.length * presetConfig.widths.length,
     completedTasks: 0,
+    totalUrls: validatedUrls.length,
+    completedUrls: 0,
+    queuedUrls: validatedUrls.length,
     currentTask: null,
     results: [],
     message: 'Queued',

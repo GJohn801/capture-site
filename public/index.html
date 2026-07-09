@@ -47,8 +47,8 @@
 
   <div class="tracker" id="tracker" hidden>
     <div class="tracker-summary">
-      <div>Queued: <span id="queuedCount">0</span></div>
-      <div>Completed: <span id="completedCount">0</span></div>
+      <div>URLs queued: <span id="queuedCount">0</span></div>
+      <div>URLs completed: <span id="completedCount">0</span></div>
     </div>
     <div class="progress-bar" aria-label="capture progress"><div id="progressFill"></div></div>
     <p id="trackerStatus">Waiting to start.</p>
@@ -72,11 +72,13 @@
     const renderTracker = (data = {}) => {
       const totalTasks = Number(data.totalTasks || 0);
       const completedTasks = Number(data.completedTasks || 0);
-      const queuedTasks = Math.max(totalTasks - completedTasks, 0);
+      const totalUrls = Number(data.totalUrls || (data.widths?.length ? Math.ceil(totalTasks / data.widths.length) : 0) || 0);
+      const completedUrls = Number(data.completedUrls || (data.widths?.length ? Math.floor(completedTasks / data.widths.length) : 0) || 0);
+      const queuedUrls = Math.max(totalUrls - completedUrls, 0);
 
-      queuedCount.textContent = queuedTasks;
-      completedCount.textContent = completedTasks;
-      progressFill.style.width = totalTasks ? `${Math.round((completedTasks / totalTasks) * 100)}%` : '0%';
+      queuedCount.textContent = queuedUrls;
+      completedCount.textContent = completedUrls;
+      progressFill.style.width = totalUrls ? `${Math.round((completedUrls / totalUrls) * 100)}%` : '0%';
       trackerStatus.textContent = data.message || 'Waiting to start.';
       tracker.hidden = false;
     };
@@ -147,7 +149,7 @@
       const totalTasks = trimmedUrls.length * widthCount;
 
       status.innerHTML = '<p>Queued…</p>';
-      renderTracker({ totalTasks, completedTasks: 0, message: 'Queued' });
+      renderTracker({ totalTasks, totalUrls: trimmedUrls.length, completedTasks: 0, completedUrls: 0, message: 'Queued' });
       button.disabled = true;
 
       try {
