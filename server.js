@@ -42,6 +42,126 @@ process.on('unhandledRejection', (reason) => {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+const captureSessions = new Map();
+
+const getCaptureSessionPayload = (session) => ({
+  captureId: session.id,
+  status: session.status,
+  totalTasks: session.totalTasks,
+  completedTasks: session.completedTasks,
+  currentTask: session.currentTask,
+  message: session.message,
+  outputDir: session.outputDir,
+  capturePreset: session.capturePreset,
+  widths: session.widths,
+  results: session.results,
+});
+
+const runCaptureSession = async (captureId, { urls, presetConfig, presetOutputDir, logsDir }) => {
+  const session = captureSessions.get(captureId);
+  if (!session) {
+    return;
+  }
+
+  session.status = 'running';
+  session.message = 'Starting capture';
+  captureSessions.set(captureId, session);
+
+  const results = [];
+
+  for (const url of urls) {
+    const safeBase = makeSafeFilename(url);
+
+    for (const width of presetConfig.widths) {
+      const outputFileName = `${safeBase}-${presetConfig.name}-${width}px.jpg`;
+      const outputPath = path.join(presetOutputDir, outputFileName);
+      const outLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.out.log`);
+      const errLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.err.log`);
+
+      session.currentTask = { url, width, output: outputPath, status: 'running' };
+      captureSessions.set(captureId, session);
+
+      try {
+        const captureOptions = {
+          fullPage: true,
+          type: 'jpeg',
+          delay: 5,
+          width,
+          preloadLazyContent: true,
+          overwrite: true,
+          timeout: 120,
+          waitForNetworkIdle: true,
+        };
+
+        const result = await captureWebsite(url, outputPath, captureOptions);
+
+        if (result.stdout) {
+          await fs.promises.appendFile(outLog, result.stdout + '\n');
+        }
+        if (result.stderr) {
+          await fs.promises.appendFile(errLog, result.stderr + '\n');
+        }
+
+        const resultItem = {
+          url,
+          width,
+          output: outputPath,
+          success: true,
+          capturePreset: presetConfig.name,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          outLog,
+          errLog,
+        };
+
+        results.push(resultItem);
+        session.results = results.slice();
+      } catch ({ error, stdout, stderr }) {
+        const message = error?.message || 'Capture failed';
+        await fs.promises.appendFile(errLog, `${message}\n${stdout || ''}\n${stderr || ''}\n`);
+
+        const resultItem = {
+          url,
+          width,
+          output: outputPath,
+          success: false,
+          capturePreset: presetConfig.name,
+          error: message,
+          stdout,
+          stderr,
+          outLog,
+          errLog,
+        };
+
+        results.push(resultItem);
+        session.results = results.slice();
+      }
+
+      session.completedTasks += 1;
+      const latestResult = results[results.length - 1];
+      session.currentTask = {
+        url,
+        width,
+        output: outputPath,
+        status: latestResult?.success ? 'completed' : 'failed',
+        error: latestResult?.error || null,
+      };
+      session.message = `Completed ${session.completedTasks}/${session.totalTasks} tasks`;
+      session.status = session.completedTasks >= session.totalTasks ? 'completed' : 'running';
+      captureSessions.set(captureId, session);
+    }
+  }
+
+  const successCount = results.filter((item) => item.success).length;
+  const failureCount = results.length - successCount;
+  session.currentTask = null;
+  session.status = 'completed';
+  session.message = `${successCount} screenshot(s) completed for ${presetConfig.name} preset, ${failureCount} failed.`;
+  session.outputDir = presetOutputDir;
+  session.results = results.slice();
+  captureSessions.set(captureId, session);
+};
+
 // Convert a URL into a safe filename.
 const makeSafeFilename = (url) => {
   return String(url)
@@ -191,83 +311,60 @@ app.post('/capture', async (req, res) => {
   }
 
   const presetOutputDir = path.join(outputDirPath, presetConfig.name);
-  await fs.promises.mkdir(presetOutputDir, { recursive: true });
   const logsDir = path.join(presetOutputDir, 'logs');
-  await fs.promises.mkdir(logsDir, { recursive: true });
 
-  const results = [];
-
-  for (const url of validatedUrls) {
-    const safeBase = makeSafeFilename(url);
-
-    for (const width of presetConfig.widths) {
-      const outputFileName = `${safeBase}-${presetConfig.name}-${width}px.jpg`;
-      const outputPath = path.join(presetOutputDir, outputFileName);
-      const outLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.out.log`);
-      const errLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.err.log`);
-
-      try {
-        const captureOptions = {
-          fullPage: true,
-          type: 'jpeg',
-          delay: 5,
-          width,
-          preloadLazyContent: true,
-          overwrite: true,
-          timeout: 120,
-          waitForNetworkIdle: true,
-        };
-
-        const result = await captureWebsite(url, outputPath, captureOptions);
-
-        if (result.stdout) {
-          await fs.promises.appendFile(outLog, result.stdout + '\n');
-        }
-        if (result.stderr) {
-          await fs.promises.appendFile(errLog, result.stderr + '\n');
-        }
-
-        results.push({
-          url,
-          width,
-          output: outputPath,
-          success: true,
-          capturePreset: presetConfig.name,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          outLog,
-          errLog,
-        });
-      } catch ({ error, stdout, stderr }) {
-        const message = error?.message || 'Capture failed';
-        await fs.promises.appendFile(errLog, `${message}\n${stdout || ''}\n${stderr || ''}\n`);
-
-        results.push({
-          url,
-          width,
-          output: outputPath,
-          success: false,
-          capturePreset: presetConfig.name,
-          error: message,
-          stdout,
-          stderr,
-          outLog,
-          errLog,
-        });
-      }
-    }
+  try {
+    await fs.promises.mkdir(presetOutputDir, { recursive: true });
+    await fs.promises.mkdir(logsDir, { recursive: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 
-  const successCount = results.filter((item) => item.success).length;
-  const failureCount = results.length - successCount;
-
-  return res.json({
-    message: `${successCount} screenshot(s) completed for ${presetConfig.name} preset, ${failureCount} failed.`,
+  const captureId = `capture-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const session = {
+    id: captureId,
+    status: 'queued',
+    totalTasks: validatedUrls.length * presetConfig.widths.length,
+    completedTasks: 0,
+    currentTask: null,
+    results: [],
+    message: 'Queued',
+    outputDir: presetOutputDir,
     capturePreset: presetConfig.name,
     widths: presetConfig.widths,
-    outputDir: presetOutputDir,
-    results,
-  });
+  };
+  captureSessions.set(captureId, session);
+
+  res.json(getCaptureSessionPayload(session));
+
+  void (async () => {
+    try {
+      await runCaptureSession(captureId, {
+        urls: validatedUrls,
+        presetConfig,
+        presetOutputDir,
+        logsDir,
+      });
+    } catch (error) {
+      const currentSession = captureSessions.get(captureId);
+      if (currentSession) {
+        currentSession.status = 'failed';
+        currentSession.message = error.message || 'Capture failed';
+        currentSession.currentTask = null;
+        captureSessions.set(captureId, currentSession);
+      }
+    }
+  })();
+});
+
+app.get('/capture/status/:captureId', (req, res) => {
+  const session = captureSessions.get(req.params.captureId);
+
+  if (!session) {
+    return res.status(404).json({ error: 'Capture session not found.' });
+  }
+
+  return res.json(getCaptureSessionPayload(session));
 });
 
 const server = app.listen(port, () => {

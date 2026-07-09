@@ -17,6 +17,11 @@
     pre { background: #f6f8fa; padding: 1rem; white-space: pre-wrap; word-break: break-word; }
     .status { margin-top: 1rem; }
     .field-note { margin-top: -0.75rem; margin-bottom: 0.75rem; color: #555; font-size: 0.95rem; }
+    .tracker { margin-top: 1.25rem; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 0.75rem; background: #f9fafb; }
+    .tracker-summary { display: flex; gap: 1.5rem; margin-bottom: 0.75rem; font-weight: 600; }
+    .progress-bar { height: 0.7rem; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-bottom: 0.75rem; }
+    .progress-bar > div { height: 100%; width: 0%; background: #2563eb; transition: width 0.2s ease; }
+    .tracker p { margin: 0.25rem 0; }
   </style>
 </head>
 <body>
@@ -40,6 +45,15 @@
 
   <button id="captureButton">Capture Screenshot(s)</button>
 
+  <div class="tracker" id="tracker" hidden>
+    <div class="tracker-summary">
+      <div>Queued: <span id="queuedCount">0</span></div>
+      <div>Completed: <span id="completedCount">0</span></div>
+    </div>
+    <div class="progress-bar" aria-label="capture progress"><div id="progressFill"></div></div>
+    <p id="trackerStatus">Waiting to start.</p>
+  </div>
+
   <div class="status" id="status"></div>
 
   <script>
@@ -48,10 +62,28 @@
     const urlsTextarea = document.getElementById('urls');
     const outputDirInput = document.getElementById('outputDir');
     const status = document.getElementById('status');
+    const tracker = document.getElementById('tracker');
+    const queuedCount = document.getElementById('queuedCount');
+    const completedCount = document.getElementById('completedCount');
+    const progressFill = document.getElementById('progressFill');
+    const trackerStatus = document.getElementById('trackerStatus');
+    let pollTimer = null;
+
+    const renderTracker = (data = {}) => {
+      const totalTasks = Number(data.totalTasks || 0);
+      const completedTasks = Number(data.completedTasks || 0);
+      const queuedTasks = Math.max(totalTasks - completedTasks, 0);
+
+      queuedCount.textContent = queuedTasks;
+      completedCount.textContent = completedTasks;
+      progressFill.style.width = totalTasks ? `${Math.round((completedTasks / totalTasks) * 100)}%` : '0%';
+      trackerStatus.textContent = data.message || 'Waiting to start.';
+      tracker.hidden = false;
+    };
 
     // Build a readable result block after the capture request finishes.
     const renderResult = (result) => {
-      const lines = result.results.map((item) => {
+      const lines = (result.results || []).map((item) => {
         const statusText = item.success ? '✅ Success' : '❌ Failed';
         return `Preset: ${item.capturePreset}\nWidth: ${item.width}px\nURL: ${item.url}\nStatus: ${statusText}\nOutput: ${item.output}\n${item.error ? `Error: ${item.error}\n` : ''}${item.stderr ? `Stderr: ${item.stderr}\n` : ''}`;
       });
@@ -59,10 +91,45 @@
       status.innerHTML = `
         <p style="color:green">${result.message}</p>
         <p><strong>Preset:</strong> ${result.capturePreset}</p>
-        <p><strong>Widths:</strong> ${result.widths.join(', ')}px</p>
+        <p><strong>Widths:</strong> ${(result.widths || []).join(', ')}px</p>
         <p><strong>Output directory:</strong> ${result.outputDir}</p>
         <pre>${lines.join('\n---\n')}</pre>
       `;
+    };
+
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const pollCaptureStatus = async (captureId) => {
+      try {
+        const response = await fetch(`/capture/status/${captureId}`);
+        const result = await response.json();
+
+        if (!response.ok) {
+          throw new Error(result.error || 'Unable to fetch capture status');
+        }
+
+        renderTracker(result);
+
+        if (result.status === 'completed' || result.status === 'failed') {
+          stopPolling();
+          button.disabled = false;
+          if (result.status === 'completed') {
+            renderResult(result);
+          } else {
+            status.innerHTML = `<p style="color:red">${result.message}</p>`;
+          }
+          return;
+        }
+      } catch (error) {
+        stopPolling();
+        button.disabled = false;
+        status.innerHTML = `<p style="color:red">${error.message}</p>`;
+      }
     };
 
     button.addEventListener('click', async () => {
@@ -74,9 +141,14 @@
         return;
       }
 
-      status.innerHTML = '<p>Capturing…</p>';
-      button.disabled = true;
+      const trimmedUrls = urls.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       const capturePreset = document.querySelector('input[name="capturePreset"]:checked')?.value || 'wordpress';
+      const widthCount = capturePreset === 'webflow' ? 4 : 6;
+      const totalTasks = trimmedUrls.length * widthCount;
+
+      status.innerHTML = '<p>Queued…</p>';
+      renderTracker({ totalTasks, completedTasks: 0, message: 'Queued' });
+      button.disabled = true;
 
       try {
         const body = { outputDir, capturePreset, urls };
@@ -92,11 +164,23 @@
           throw new Error(result.error || 'Capture failed');
         }
 
-        renderResult(result);
+        if (result.captureId) {
+          status.innerHTML = '<p>Capture in progress…</p>';
+          stopPolling();
+          renderTracker(result);
+          pollTimer = setInterval(() => {
+            void pollCaptureStatus(result.captureId);
+          }, 600);
+          await pollCaptureStatus(result.captureId);
+        } else {
+          renderTracker(result);
+          renderResult(result);
+          button.disabled = false;
+        }
       } catch (error) {
-        status.innerHTML = `<p style="color:red">${error.message}</p>`;
-      } finally {
+        stopPolling();
         button.disabled = false;
+        status.innerHTML = `<p style="color:red">${error.message}</p>`;
       }
     });
   </script>
