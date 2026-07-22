@@ -40,7 +40,8 @@
     <legend>Capture options</legend>
     <label><input type="radio" name="capturePreset" value="wordpress" checked /> WordPress</label>
     <label><input type="radio" name="capturePreset" value="webflow" /> Webflow</label>
-    <div class="field-note">WordPress uses 375, 600, 768, 1025, 1200 and 1600px widths. Webflow uses 1025, 992, 767 and 478px widths.</div>
+    <label><input type="radio" name="capturePreset" value="desktop-only" /> Desktop Only</label>
+    <div class="field-note">WordPress uses 375, 600, 768, 1025, 1200 and 1600px widths. Webflow uses 1025, 992, 767 and 478px widths. Desktop Only captures the full page at 1025px wide.</div>
   </fieldset>
 
   <button id="captureButton">Capture Screenshot(s)</button>
@@ -145,7 +146,7 @@
 
       const trimmedUrls = urls.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
       const capturePreset = document.querySelector('input[name="capturePreset"]:checked')?.value || 'wordpress';
-      const widthCount = capturePreset === 'webflow' ? 4 : 6;
+      const widthCount = capturePreset === 'webflow' ? 4 : capturePreset === 'desktop-only' ? 1 : 6;
       const totalTasks = trimmedUrls.length * widthCount;
 
       status.innerHTML = '<p>Queued…</p>';

@@ -192,6 +192,7 @@ const validateUrl = (value) => {
 const SCREEN_SIZE_PRESETS = {
   wordpress: [375, 600, 768, 1025, 1200, 1600],
   webflow: [1025, 992, 767, 478],
+  'desktop-only': [1025],
 };
 
 const resolveCapturePreset = (value) => {
@@ -309,9 +310,14 @@ app.post('/capture', async (req, res) => {
   }
 
   const validatedUrls = [];
+  const seenUrls = new Set();
   for (const rawUrl of urls) {
     try {
-      validatedUrls.push(validateUrl(rawUrl));
+      const normalizedUrl = validateUrl(rawUrl);
+      if (!seenUrls.has(normalizedUrl)) {
+        seenUrls.add(normalizedUrl);
+        validatedUrls.push(normalizedUrl);
+      }
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }
