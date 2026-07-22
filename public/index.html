@@ -17,80 +17,143 @@
     pre { background: #f6f8fa; padding: 1rem; white-space: pre-wrap; word-break: break-word; }
     .status { margin-top: 1rem; }
     .field-note { margin-top: -0.75rem; margin-bottom: 0.75rem; color: #555; font-size: 0.95rem; }
+    .tracker { margin-top: 1.25rem; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 0.75rem; background: #f9fafb; }
+    .tracker-summary { display: flex; gap: 1.5rem; margin-bottom: 0.75rem; font-weight: 600; }
+    .progress-bar { height: 0.7rem; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-bottom: 0.75rem; }
+    .progress-bar > div { height: 100%; width: 0%; background: #2563eb; transition: width 0.2s ease; }
+    .tracker p { margin: 0.25rem 0; }
   </style>
 </head>
 <body>
   <h1>Capture Website</h1>
-  <p>Enter a single URL or paste one URL per line in the list. Choose the output directory name and click the button.</p>
-
-  <label for="url">Single URL</label>
-  <input id="url" type="url" placeholder="https://example.com" value="https://example.com" />
+  <p>Paste one URL per line in the list. Choose the output directory name and click the button.</p>
 
   <label for="urls">URL list</label>
   <textarea id="urls" placeholder="https://example.com\nhttps://example.org"></textarea>
-  <div class="field-note">If both fields are filled, the list will be used.</div>
+  <div class="field-note">One URL per line. The UI only supports batch capture.</div>
 
   <label for="outputDir">Output directory</label>
   <input id="outputDir" type="text" placeholder="screenshots" value="" />
-  <div class="field-note">Enter a relative folder name inside the project directory.</div>
+  <div class="field-note">Enter a folder name. Captures are saved to your Desktop by default.</div>
 
   <fieldset class="capture-mode">
-    <legend>Capture mode</legend>
-    <label><input type="radio" name="captureMode" value="desktop" checked /> Desktop</label>
-    <label><input type="radio" name="captureMode" value="mobile" /> Mobile (375px width, full height)</label>
-    <div class="field-note">Mobile mode renders at 375px width and captures the full page height.</div>
+    <legend>Capture options</legend>
+    <label><input type="radio" name="capturePreset" value="wordpress" checked /> WordPress</label>
+    <label><input type="radio" name="capturePreset" value="webflow" /> Webflow</label>
+    <div class="field-note">WordPress uses 375, 600, 768, 1025, 1200 and 1600px widths. Webflow uses 1025, 992, 767 and 478px widths.</div>
   </fieldset>
 
   <button id="captureButton">Capture Screenshot(s)</button>
+
+  <div class="tracker" id="tracker" hidden>
+    <div class="tracker-summary">
+      <div>URLs queued: <span id="queuedCount">0</span></div>
+      <div>URLs completed: <span id="completedCount">0</span></div>
+    </div>
+    <div class="progress-bar" aria-label="capture progress"><div id="progressFill"></div></div>
+    <p id="trackerStatus">Waiting to start.</p>
+  </div>
 
   <div class="status" id="status"></div>
 
   <script>
     // References to the DOM form fields and status panel.
     const button = document.getElementById('captureButton');
-    const input = document.getElementById('url');
     const urlsTextarea = document.getElementById('urls');
     const outputDirInput = document.getElementById('outputDir');
     const status = document.getElementById('status');
+    const tracker = document.getElementById('tracker');
+    const queuedCount = document.getElementById('queuedCount');
+    const completedCount = document.getElementById('completedCount');
+    const progressFill = document.getElementById('progressFill');
+    const trackerStatus = document.getElementById('trackerStatus');
+    let pollTimer = null;
+
+    const renderTracker = (data = {}) => {
+      const totalTasks = Number(data.totalTasks || 0);
+      const completedTasks = Number(data.completedTasks || 0);
+      const totalUrls = Number(data.totalUrls || (data.widths?.length ? Math.ceil(totalTasks / data.widths.length) : 0) || 0);
+      const completedUrls = Number(data.completedUrls || (data.widths?.length ? Math.floor(completedTasks / data.widths.length) : 0) || 0);
+      const queuedUrls = Math.max(totalUrls - completedUrls, 0);
+
+      queuedCount.textContent = queuedUrls;
+      completedCount.textContent = completedUrls;
+      progressFill.style.width = totalUrls ? `${Math.round((completedUrls / totalUrls) * 100)}%` : '0%';
+      trackerStatus.textContent = data.message || 'Waiting to start.';
+      tracker.hidden = false;
+    };
 
     // Build a readable result block after the capture request finishes.
     const renderResult = (result) => {
-      const lines = result.results.map((item) => {
+      const lines = (result.results || []).map((item) => {
         const statusText = item.success ? '✅ Success' : '❌ Failed';
-        return `Mode: ${item.captureMode}\nURL: ${item.url}\nStatus: ${statusText}\nOutput: ${item.output}\n${item.error ? `Error: ${item.error}\n` : ''}${item.stderr ? `Stderr: ${item.stderr}\n` : ''}`;
+        return `Preset: ${item.capturePreset}\nWidth: ${item.width}px\nURL: ${item.url}\nStatus: ${statusText}\nOutput: ${item.output}\n${item.error ? `Error: ${item.error}\n` : ''}${item.stderr ? `Stderr: ${item.stderr}\n` : ''}`;
       });
 
       status.innerHTML = `
         <p style="color:green">${result.message}</p>
-        <p><strong>Capture mode:</strong> ${result.captureMode}</p>
+        <p><strong>Preset:</strong> ${result.capturePreset}</p>
+        <p><strong>Widths:</strong> ${(result.widths || []).join(', ')}px</p>
         <p><strong>Output directory:</strong> ${result.outputDir}</p>
         <pre>${lines.join('\n---\n')}</pre>
       `;
     };
 
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const pollCaptureStatus = async (captureId) => {
+      try {
+        const response = await fetch(`/capture/status/${captureId}`);
+        const result = await response.json();
+
+        if (!response.ok) {
+          throw new Error(result.error || 'Unable to fetch capture status');
+        }
+
+        renderTracker(result);
+
+        if (result.status === 'completed' || result.status === 'failed') {
+          stopPolling();
+          button.disabled = false;
+          if (result.status === 'completed') {
+            renderResult(result);
+          } else {
+            status.innerHTML = `<p style="color:red">${result.message}</p>`;
+          }
+          return;
+        }
+      } catch (error) {
+        stopPolling();
+        button.disabled = false;
+        status.innerHTML = `<p style="color:red">${error.message}</p>`;
+      }
+    };
+
     button.addEventListener('click', async () => {
-      const url = input.value.trim();
       const urls = urlsTextarea.value.trim();
       const outputDir = outputDirInput.value.trim();
 
-      if (!url && !urls) {
-        status.innerHTML = '<p style="color:red">Please enter a URL or a list of URLs.</p>';
+      if (!urls) {
+        status.innerHTML = '<p style="color:red">Please enter a list of URLs.</p>';
         return;
       }
 
-      status.innerHTML = '<p>Capturing…</p>';
+      const trimmedUrls = urls.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      const capturePreset = document.querySelector('input[name="capturePreset"]:checked')?.value || 'wordpress';
+      const widthCount = capturePreset === 'webflow' ? 4 : 6;
+      const totalTasks = trimmedUrls.length * widthCount;
+
+      status.innerHTML = '<p>Queued…</p>';
+      renderTracker({ totalTasks, totalUrls: trimmedUrls.length, completedTasks: 0, completedUrls: 0, message: 'Queued' });
       button.disabled = true;
-      const captureMode = document.querySelector('input[name="captureMode"]:checked')?.value || 'desktop';
 
       try {
-        const body = { outputDir, captureMode };
-
-        // If the URL list is populated, send that first. Otherwise use the single URL.
-        if (urls) {
-          body.urls = urls;
-        } else {
-          body.url = url;
-        }
+        const body = { outputDir, capturePreset, urls };
 
         const response = await fetch('/capture', {
           method: 'POST',
@@ -103,11 +166,23 @@
           throw new Error(result.error || 'Capture failed');
         }
 
-        renderResult(result);
+        if (result.captureId) {
+          status.innerHTML = '<p>Capture in progress…</p>';
+          stopPolling();
+          renderTracker(result);
+          pollTimer = setInterval(() => {
+            void pollCaptureStatus(result.captureId);
+          }, 600);
+          await pollCaptureStatus(result.captureId);
+        } else {
+          renderTracker(result);
+          renderResult(result);
+          button.disabled = false;
+        }
       } catch (error) {
-        status.innerHTML = `<p style="color:red">${error.message}</p>`;
-      } finally {
+        stopPolling();
         button.disabled = false;
+        status.innerHTML = `<p style="color:red">${error.message}</p>`;
       }
     });
   </script>

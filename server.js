@@ -2,10 +2,12 @@ const express = require('express');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const cwd = process.cwd();
+const desktopRoot = path.join(os.homedir(), 'Desktop');
 const serverLogPath = path.join(cwd, 'server.log');
 
 // Keep the server log open to capture requests and unexpected runtime failures.
@@ -40,6 +42,133 @@ process.on('unhandledRejection', (reason) => {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+const captureSessions = new Map();
+
+const getCaptureSessionPayload = (session) => ({
+  captureId: session.id,
+  status: session.status,
+  totalTasks: session.totalTasks,
+  completedTasks: session.completedTasks,
+  totalUrls: session.totalUrls,
+  completedUrls: session.completedUrls,
+  queuedUrls: session.queuedUrls,
+  currentTask: session.currentTask,
+  message: session.message,
+  outputDir: session.outputDir,
+  capturePreset: session.capturePreset,
+  widths: session.widths,
+  results: session.results,
+});
+
+const runCaptureSession = async (captureId, { urls, presetConfig, presetOutputDir, logsDir }) => {
+  const session = captureSessions.get(captureId);
+  if (!session) {
+    return;
+  }
+
+  session.status = 'running';
+  session.message = 'Starting capture';
+  captureSessions.set(captureId, session);
+
+  const results = [];
+
+  for (const url of urls) {
+    const safeBase = makeSafeFilename(url);
+
+    for (const width of presetConfig.widths) {
+      const outputFileName = `${safeBase}-${presetConfig.name}-${width}px.jpg`;
+      const outputPath = path.join(presetOutputDir, outputFileName);
+      const outLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.out.log`);
+      const errLog = path.join(logsDir, `${safeBase}-${presetConfig.name}-${width}px.err.log`);
+
+      session.currentTask = { url, width, output: outputPath, status: 'running' };
+      captureSessions.set(captureId, session);
+
+      try {
+        const captureOptions = {
+          fullPage: true,
+          type: 'jpeg',
+          delay: 5,
+          width,
+          preloadLazyContent: true,
+          overwrite: true,
+          timeout: 120,
+          waitForNetworkIdle: true,
+        };
+
+        const result = await captureWebsite(url, outputPath, captureOptions);
+
+        if (result.stdout) {
+          await fs.promises.appendFile(outLog, result.stdout + '\n');
+        }
+        if (result.stderr) {
+          await fs.promises.appendFile(errLog, result.stderr + '\n');
+        }
+
+        const resultItem = {
+          url,
+          width,
+          output: outputPath,
+          success: true,
+          capturePreset: presetConfig.name,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          outLog,
+          errLog,
+        };
+
+        results.push(resultItem);
+        session.results = results.slice();
+      } catch ({ error, stdout, stderr }) {
+        const message = error?.message || 'Capture failed';
+        await fs.promises.appendFile(errLog, `${message}\n${stdout || ''}\n${stderr || ''}\n`);
+
+        const resultItem = {
+          url,
+          width,
+          output: outputPath,
+          success: false,
+          capturePreset: presetConfig.name,
+          error: message,
+          stdout,
+          stderr,
+          outLog,
+          errLog,
+        };
+
+        results.push(resultItem);
+        session.results = results.slice();
+      }
+
+      session.completedTasks += 1;
+      const latestResult = results[results.length - 1];
+      session.currentTask = {
+        url,
+        width,
+        output: outputPath,
+        status: latestResult?.success ? 'completed' : 'failed',
+        error: latestResult?.error || null,
+      };
+      session.message = `Completed ${session.completedTasks}/${session.totalTasks} tasks`;
+      session.status = session.completedTasks >= session.totalTasks ? 'completed' : 'running';
+      captureSessions.set(captureId, session);
+    }
+
+    session.completedUrls += 1;
+    session.queuedUrls = Math.max(session.totalUrls - session.completedUrls, 0);
+    captureSessions.set(captureId, session);
+  }
+
+  const successCount = results.filter((item) => item.success).length;
+  const failureCount = results.length - successCount;
+  session.currentTask = null;
+  session.status = 'completed';
+  session.message = `${successCount} screenshot(s) completed for ${presetConfig.name} preset, ${failureCount} failed.`;
+  session.outputDir = presetOutputDir;
+  session.results = results.slice();
+  captureSessions.set(captureId, session);
+};
+
 // Convert a URL into a safe filename.
 const makeSafeFilename = (url) => {
   return String(url)
@@ -60,7 +189,23 @@ const validateUrl = (value) => {
   }
 };
 
-// Resolve the output directory inside the project folder.
+const SCREEN_SIZE_PRESETS = {
+  wordpress: [375, 600, 768, 1025, 1200, 1600],
+  webflow: [1025, 992, 767, 478],
+};
+
+const resolveCapturePreset = (value) => {
+  const presetName = String(value || 'wordpress').trim().toLowerCase();
+  const widths = SCREEN_SIZE_PRESETS[presetName];
+
+  if (!widths) {
+    throw new Error(`Unsupported capture preset: ${value}`);
+  }
+
+  return { name: presetName, widths };
+};
+
+// Resolve the output directory under the user's Desktop.
 const resolveOutputDirectory = (name) => {
   const trimmedName = String(name).trim() || 'screenshots';
 
@@ -68,9 +213,9 @@ const resolveOutputDirectory = (name) => {
     throw new Error('Invalid output directory name. Use a relative folder name only.');
   }
 
-  const outputDirPath = path.resolve(cwd, trimmedName);
-  if (!outputDirPath.startsWith(cwd + path.sep) && outputDirPath !== cwd) {
-    throw new Error('Invalid output directory path. Output must be inside the project folder.');
+  const outputDirPath = path.resolve(desktopRoot, trimmedName);
+  if (!outputDirPath.startsWith(desktopRoot + path.sep) && outputDirPath !== desktopRoot) {
+    throw new Error('Invalid output directory path. Output must be inside your Desktop folder.');
   }
 
   return outputDirPath;
@@ -137,11 +282,9 @@ const captureWebsite = (url, outputPath, options = {}) => {
 };
 
 app.post('/capture', async (req, res) => {
-  // Parse the request body.
-  const singleUrl = String(req.body?.url || '').trim();
   const urlListRaw = String(req.body?.urls || '').trim();
   const outputDirName = String(req.body?.outputDir ?? '').trim();
-  const captureMode = String(req.body?.captureMode || 'desktop').trim().toLowerCase();
+  const capturePresetInput = String(req.body?.capturePreset || 'wordpress').trim();
 
   let outputDirPath;
   try {
@@ -150,18 +293,19 @@ app.post('/capture', async (req, res) => {
     return res.status(400).json({ error: error.message });
   }
 
-  if (!['desktop', 'mobile'].includes(captureMode)) {
-    return res.status(400).json({ error: 'captureMode must be either "desktop" or "mobile".' });
+  let presetConfig;
+  try {
+    presetConfig = resolveCapturePreset(capturePresetInput);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 
   const urls = urlListRaw
     ? urlListRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-    : singleUrl
-      ? [singleUrl]
-      : [];
+    : [];
 
   if (urls.length === 0) {
-    return res.status(400).json({ error: 'Enter at least one URL in the single URL field or URL list.' });
+    return res.status(400).json({ error: 'Enter at least one URL in the URL list.' });
   }
 
   const validatedUrls = [];
@@ -173,81 +317,64 @@ app.post('/capture', async (req, res) => {
     }
   }
 
-  // Ensure the output directory exists before running any captures.
-  await fs.promises.mkdir(outputDirPath, { recursive: true });
-  const logsDir = path.join(outputDirPath, 'logs');
-  await fs.promises.mkdir(logsDir, { recursive: true });
+  const presetOutputDir = path.join(outputDirPath, presetConfig.name);
+  const logsDir = path.join(presetOutputDir, 'logs');
 
-  const results = [];
-  for (const url of validatedUrls) {
-    const safeBase = makeSafeFilename(url);
-    const filenameSuffix = captureMode === 'mobile' ? '-mobile' : '';
-    const outputPath = path.join(outputDirPath, `${safeBase}${filenameSuffix}.jpg`);
-    const outLog = path.join(logsDir, `${safeBase}${filenameSuffix}.out.log`);
-    const errLog = path.join(logsDir, `${safeBase}${filenameSuffix}.err.log`);
-
-    try {
-      const captureOptions = {
-        fullPage: true,
-        type: 'jpeg',
-        delay: 5,
-        preloadLazyContent: true,
-        overwrite: true,
-        timeout: 120,
-        waitForNetworkIdle: true,
-      };
-
-      if (captureMode === 'mobile') {
-        captureOptions.width = 375;
-        captureOptions.emulateDevice = 'iPhone X';
-      }
-
-      const result = await captureWebsite(url, outputPath, captureOptions);
-
-      if (result.stdout) {
-        await fs.promises.appendFile(outLog, result.stdout + '\n');
-      }
-      if (result.stderr) {
-        await fs.promises.appendFile(errLog, result.stderr + '\n');
-      }
-
-      results.push({
-        url,
-        output: outputPath,
-        success: true,
-        captureMode,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        outLog,
-        errLog,
-      });
-    } catch ({ error, stdout, stderr }) {
-      const message = error?.message || 'Capture failed';
-      await fs.promises.appendFile(errLog, `${message}\n${stdout || ''}\n${stderr || ''}\n`);
-
-      results.push({
-        url,
-        output: outputPath,
-        success: false,
-        captureMode,
-        error: message,
-        stdout,
-        stderr,
-        outLog,
-        errLog,
-      });
-    }
+  try {
+    await fs.promises.mkdir(presetOutputDir, { recursive: true });
+    await fs.promises.mkdir(logsDir, { recursive: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 
-  const successCount = results.filter((item) => item.success).length;
-  const failureCount = results.length - successCount;
+  const captureId = `capture-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const session = {
+    id: captureId,
+    status: 'queued',
+    totalTasks: validatedUrls.length * presetConfig.widths.length,
+    completedTasks: 0,
+    totalUrls: validatedUrls.length,
+    completedUrls: 0,
+    queuedUrls: validatedUrls.length,
+    currentTask: null,
+    results: [],
+    message: 'Queued',
+    outputDir: presetOutputDir,
+    capturePreset: presetConfig.name,
+    widths: presetConfig.widths,
+  };
+  captureSessions.set(captureId, session);
 
-  return res.json({
-    message: `${successCount} capture(s) completed, ${failureCount} failed.`,
-    captureMode,
-    outputDir: outputDirPath,
-    results,
-  });
+  res.json(getCaptureSessionPayload(session));
+
+  void (async () => {
+    try {
+      await runCaptureSession(captureId, {
+        urls: validatedUrls,
+        presetConfig,
+        presetOutputDir,
+        logsDir,
+      });
+    } catch (error) {
+      const currentSession = captureSessions.get(captureId);
+      if (currentSession) {
+        currentSession.status = 'failed';
+        currentSession.message = error.message || 'Capture failed';
+        currentSession.currentTask = null;
+        captureSessions.set(captureId, currentSession);
+      }
+    }
+  })();
+});
+
+app.get('/capture/status/:captureId', (req, res) => {
+  const session = captureSessions.get(req.params.captureId);
+
+  if (!session) {
+    return res.status(404).json({ error: 'Capture session not found.' });
+  }
+
+  return res.json(getCaptureSessionPayload(session));
 });
 
 const server = app.listen(port, () => {
