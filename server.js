@@ -44,6 +44,30 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const captureSessions = new Map();
 
+const formatCaptureFailureMessage = (message, url) => {
+  const normalizedMessage = String(message || '').trim();
+
+  if (!normalizedMessage) {
+    return '';
+  }
+
+  if (/failed to fetch/i.test(normalizedMessage)) {
+    return `${normalizedMessage} for ${url}`;
+  }
+
+  return normalizedMessage;
+};
+
+const getFailedUrlsSummary = (results = []) => {
+  const failedUrls = [...new Set(
+    (results || [])
+      .filter((item) => item && !item.success && item.url)
+      .map((item) => item.url)
+  )];
+
+  return failedUrls.join(', ');
+};
+
 const getCaptureSessionPayload = (session) => ({
   captureId: session.id,
   status: session.status,
@@ -120,7 +144,7 @@ const runCaptureSession = async (captureId, { urls, presetConfig, presetOutputDi
         results.push(resultItem);
         session.results = results.slice();
       } catch ({ error, stdout, stderr }) {
-        const message = error?.message || 'Capture failed';
+        const message = formatCaptureFailureMessage(error?.message || 'Capture failed', url);
         await fs.promises.appendFile(errLog, `${message}\n${stdout || ''}\n${stderr || ''}\n`);
 
         const resultItem = {
@@ -161,9 +185,10 @@ const runCaptureSession = async (captureId, { urls, presetConfig, presetOutputDi
 
   const successCount = results.filter((item) => item.success).length;
   const failureCount = results.length - successCount;
+  const failedUrlsSummary = getFailedUrlsSummary(results);
   session.currentTask = null;
   session.status = 'completed';
-  session.message = `${successCount} screenshot(s) completed for ${presetConfig.name} preset, ${failureCount} failed.`;
+  session.message = `${successCount} screenshot(s) completed for ${presetConfig.name} preset, ${failureCount} failed.${failedUrlsSummary ? ` Failed URLs: ${failedUrlsSummary}.` : ''}`;
   session.outputDir = presetOutputDir;
   session.results = results.slice();
   captureSessions.set(captureId, session);
@@ -383,29 +408,42 @@ app.get('/capture/status/:captureId', (req, res) => {
   return res.json(getCaptureSessionPayload(session));
 });
 
-const server = app.listen(port, () => {
-  console.log('Capture UI starting...');
-  console.log(`Active port: ${port}`);
-  console.log(`Open http://localhost:${port} in your browser`);
-  console.log('Use PORT=<port> npm start to run on a different port.');
-});
-
-server.on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    console.error(`Port ${port} is already in use. Use a different port or stop the process currently listening on :${port}.`);
-    console.error('Example: PORT=3001 npm start');
-    process.exit(1);
-  }
-
-  throw error;
-});
+let server;
 
 const shutdown = () => {
   appendServerLog('Shutting down server');
-  server.close(() => {
+  if (server) {
+    server.close(() => {
+      logStream.end(() => process.exit(0));
+    });
+  } else {
     logStream.end(() => process.exit(0));
-  });
+  }
 };
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+if (require.main === module) {
+  server = app.listen(port, () => {
+    console.log('Capture UI starting...');
+    console.log(`Active port: ${port}`);
+    console.log(`Open http://localhost:${port} in your browser`);
+    console.log('Use PORT=<port> npm start to run on a different port.');
+  });
+
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use. Use a different port or stop the process currently listening on :${port}.`);
+      console.error('Example: PORT=3001 npm start');
+      process.exit(1);
+    }
+
+    throw error;
+  });
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+module.exports = {
+  formatCaptureFailureMessage,
+  getFailedUrlsSummary,
+};
