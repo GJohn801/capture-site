@@ -1,0 +1,3 @@
+# Optional PDF verification and preview tools, not needed by the Node server.
+pypdf>=6.1,<7
+pymupdf>=1.26,<2
